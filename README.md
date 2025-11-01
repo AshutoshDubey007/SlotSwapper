@@ -41,13 +41,21 @@ Follow these steps to run the project locally:
 
 ### 1️⃣ Clone the Repository
 ```bash
-
+git clone https://github.com/AshutoshDubey007/SlotSwapper.git
+cd SlotSwapper
+```
+```bash
 npm install
+
+```
+
+```
 VITE_SUPABASE_URL=https://your-supabase-project.supabase.co
 VITE_SUPABASE_ANON_KEY=your-supabase-anon-key
-
+```
+```
 npm run dev
-
+```
 src/
  ├── components/
  │   ├── Auth.tsx
@@ -90,5 +98,4 @@ Managing multiple pending swap requests for the same slot.
 Designing an intuitive calendar-based UI for slot visualization.
 
 Ensuring security and data integrity using Supabase auth roles.
-git clone https://github.com/<your-username>/SlotSwapper.git
-cd SlotSwapper
+
