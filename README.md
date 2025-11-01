@@ -56,6 +56,7 @@ VITE_SUPABASE_ANON_KEY=your-supabase-anon-key
 ```
 npm run dev
 ```
+```
 src/
  ├── components/
  │   ├── Auth.tsx
@@ -98,4 +99,4 @@ Managing multiple pending swap requests for the same slot.
 Designing an intuitive calendar-based UI for slot visualization.
 
 Ensuring security and data integrity using Supabase auth roles.
-
+```
