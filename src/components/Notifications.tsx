@@ -1,15 +1,15 @@
 import { useState, useEffect } from 'react';
 import { supabase, SwapRequest, Event } from '../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
-import { Check, X, Clock } from 'lucide-react';
+import { Check, X, Clock, AlertCircle } from 'lucide-react';
 
 interface NotificationsProps {
   onRefresh: () => void;
 }
 
 interface SwapRequestWithEvents extends SwapRequest {
-  requester_slot: Event;
-  owner_slot: Event;
+  requester_slot: Event | null;
+  owner_slot: Event | null;
 }
 
 export function Notifications({ onRefresh }: NotificationsProps) {
@@ -17,6 +17,7 @@ export function Notifications({ onRefresh }: NotificationsProps) {
   const [incomingRequests, setIncomingRequests] = useState<SwapRequestWithEvents[]>([]);
   const [outgoingRequests, setOutgoingRequests] = useState<SwapRequestWithEvents[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     loadRequests();
@@ -24,54 +25,78 @@ export function Notifications({ onRefresh }: NotificationsProps) {
 
   const loadRequests = async () => {
     try {
-      const { data: incoming } = await supabase
+      setError(null);
+      const { data: incoming, error: incomingError } = await supabase
         .from('swap_requests')
         .select('*')
         .eq('owner_id', user?.id)
         .eq('status', 'PENDING')
         .order('created_at', { ascending: false });
 
-      const { data: outgoing } = await supabase
+      if (incomingError) throw incomingError;
+
+      const { data: outgoing, error: outgoingError } = await supabase
         .from('swap_requests')
         .select('*')
         .eq('requester_id', user?.id)
         .order('created_at', { ascending: false });
 
+      if (outgoingError) throw outgoingError;
+
       if (incoming) {
         const incomingWithEvents = await Promise.all(
           incoming.map(async (req) => {
-            const [requesterSlot, ownerSlot] = await Promise.all([
-              supabase.from('events').select('*').eq('id', req.requester_slot_id).single(),
-              supabase.from('events').select('*').eq('id', req.owner_slot_id).single(),
-            ]);
-            return {
-              ...req,
-              requester_slot: requesterSlot.data!,
-              owner_slot: ownerSlot.data!,
-            };
+            try {
+              const [requesterSlot, ownerSlot] = await Promise.all([
+                supabase.from('events').select('*').eq('id', req.requester_slot_id).maybeSingle(),
+                supabase.from('events').select('*').eq('id', req.owner_slot_id).maybeSingle(),
+              ]);
+              return {
+                ...req,
+                requester_slot: requesterSlot.data || null,
+                owner_slot: ownerSlot.data || null,
+              };
+            } catch (e) {
+              console.error('Error loading event:', e);
+              return {
+                ...req,
+                requester_slot: null,
+                owner_slot: null,
+              };
+            }
           })
         );
-        setIncomingRequests(incomingWithEvents);
+        setIncomingRequests(incomingWithEvents.filter(r => r.requester_slot && r.owner_slot));
       }
 
       if (outgoing) {
         const outgoingWithEvents = await Promise.all(
           outgoing.map(async (req) => {
-            const [requesterSlot, ownerSlot] = await Promise.all([
-              supabase.from('events').select('*').eq('id', req.requester_slot_id).single(),
-              supabase.from('events').select('*').eq('id', req.owner_slot_id).single(),
-            ]);
-            return {
-              ...req,
-              requester_slot: requesterSlot.data!,
-              owner_slot: ownerSlot.data!,
-            };
+            try {
+              const [requesterSlot, ownerSlot] = await Promise.all([
+                supabase.from('events').select('*').eq('id', req.requester_slot_id).maybeSingle(),
+                supabase.from('events').select('*').eq('id', req.owner_slot_id).maybeSingle(),
+              ]);
+              return {
+                ...req,
+                requester_slot: requesterSlot.data || null,
+                owner_slot: ownerSlot.data || null,
+              };
+            } catch (e) {
+              console.error('Error loading event:', e);
+              return {
+                ...req,
+                requester_slot: null,
+                owner_slot: null,
+              };
+            }
           })
         );
-        setOutgoingRequests(outgoingWithEvents);
+        setOutgoingRequests(outgoingWithEvents.filter(r => r.requester_slot && r.owner_slot));
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error('Error loading requests:', err);
+      setError(err.message || 'Failed to load requests');
     } finally {
       setLoading(false);
     }
@@ -79,7 +104,13 @@ export function Notifications({ onRefresh }: NotificationsProps) {
 
   const handleResponse = async (requestId: string, accept: boolean) => {
     try {
-      const authHeader = `Bearer ${(await supabase.auth.getSession()).data.session?.access_token}`;
+      setLoading(true);
+      const session = await supabase.auth.getSession();
+      if (!session.data.session?.access_token) {
+        throw new Error('No session token');
+      }
+
+      const authHeader = `Bearer ${session.data.session.access_token}`;
       const apiUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/swap-response`;
 
       const response = await fetch(apiUrl, {
@@ -92,14 +123,28 @@ export function Notifications({ onRefresh }: NotificationsProps) {
       });
 
       if (!response.ok) {
-        const result = await response.json();
-        throw new Error(result.error || 'Failed to respond to swap request');
+        const text = await response.text();
+        let errorMsg = 'Failed to respond to swap request';
+        try {
+          const result = JSON.parse(text);
+          errorMsg = result.error || errorMsg;
+        } catch {
+          errorMsg = text || errorMsg;
+        }
+        throw new Error(errorMsg);
       }
 
-      loadRequests();
+      const result = await response.json();
+      console.log('Swap response successful:', result);
+
+      await new Promise(resolve => setTimeout(resolve, 800));
+      await loadRequests();
       onRefresh();
-    } catch (err) {
+    } catch (err: any) {
       console.error('Error responding to swap:', err);
+      setError(err.message || 'Failed to respond to swap request');
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -137,6 +182,16 @@ export function Notifications({ onRefresh }: NotificationsProps) {
 
   return (
     <div className="space-y-8">
+      {error && (
+        <div className="bg-red-50 border border-red-200 rounded-lg p-4 flex items-start space-x-3">
+          <AlertCircle className="w-5 h-5 text-red-600 flex-shrink-0 mt-0.5" />
+          <div>
+            <p className="font-medium text-red-900">Error</p>
+            <p className="text-sm text-red-700">{error}</p>
+          </div>
+        </div>
+      )}
+
       <div className="bg-white rounded-xl shadow-sm p-6">
         <h2 className="text-2xl font-bold text-gray-900 mb-6">Incoming Requests</h2>
         {incomingRequests.length === 0 ? (
@@ -157,13 +212,17 @@ export function Notifications({ onRefresh }: NotificationsProps) {
                     <div className="space-y-2">
                       <div>
                         <p className="text-sm text-gray-600 mb-1">They want your:</p>
-                        <p className="font-medium text-gray-900">{request.owner_slot.title}</p>
-                        <p className="text-sm text-gray-600">{formatDateTime(request.owner_slot.start_time)}</p>
+                        <p className="font-medium text-gray-900">{request.owner_slot?.title || 'Deleted event'}</p>
+                        {request.owner_slot && (
+                          <p className="text-sm text-gray-600">{formatDateTime(request.owner_slot.start_time)}</p>
+                        )}
                       </div>
                       <div className="pt-2 border-t border-blue-200">
                         <p className="text-sm text-gray-600 mb-1">They offer:</p>
-                        <p className="font-medium text-gray-900">{request.requester_slot.title}</p>
-                        <p className="text-sm text-gray-600">{formatDateTime(request.requester_slot.start_time)}</p>
+                        <p className="font-medium text-gray-900">{request.requester_slot?.title || 'Deleted event'}</p>
+                        {request.requester_slot && (
+                          <p className="text-sm text-gray-600">{formatDateTime(request.requester_slot.start_time)}</p>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -171,17 +230,19 @@ export function Notifications({ onRefresh }: NotificationsProps) {
                 <div className="flex space-x-3">
                   <button
                     onClick={() => handleResponse(request.id, true)}
-                    className="flex-1 flex items-center justify-center space-x-2 bg-green-600 text-white py-2 px-4 rounded-lg font-medium hover:bg-green-700 transition"
+                    disabled={loading}
+                    className="flex-1 flex items-center justify-center space-x-2 bg-green-600 text-white py-2 px-4 rounded-lg font-medium hover:bg-green-700 transition disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     <Check className="w-4 h-4" />
-                    <span>Accept</span>
+                    <span>{loading ? 'Processing...' : 'Accept'}</span>
                   </button>
                   <button
                     onClick={() => handleResponse(request.id, false)}
-                    className="flex-1 flex items-center justify-center space-x-2 bg-red-600 text-white py-2 px-4 rounded-lg font-medium hover:bg-red-700 transition"
+                    disabled={loading}
+                    className="flex-1 flex items-center justify-center space-x-2 bg-red-600 text-white py-2 px-4 rounded-lg font-medium hover:bg-red-700 transition disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     <X className="w-4 h-4" />
-                    <span>Reject</span>
+                    <span>{loading ? 'Processing...' : 'Reject'}</span>
                   </button>
                 </div>
               </div>
@@ -213,13 +274,17 @@ export function Notifications({ onRefresh }: NotificationsProps) {
                     <div className="space-y-2">
                       <div>
                         <p className="text-sm text-gray-600 mb-1">You offered:</p>
-                        <p className="font-medium text-gray-900">{request.requester_slot.title}</p>
-                        <p className="text-sm text-gray-600">{formatDateTime(request.requester_slot.start_time)}</p>
+                        <p className="font-medium text-gray-900">{request.requester_slot?.title || 'Deleted event'}</p>
+                        {request.requester_slot && (
+                          <p className="text-sm text-gray-600">{formatDateTime(request.requester_slot.start_time)}</p>
+                        )}
                       </div>
                       <div className="pt-2 border-t border-gray-200">
                         <p className="text-sm text-gray-600 mb-1">For:</p>
-                        <p className="font-medium text-gray-900">{request.owner_slot.title}</p>
-                        <p className="text-sm text-gray-600">{formatDateTime(request.owner_slot.start_time)}</p>
+                        <p className="font-medium text-gray-900">{request.owner_slot?.title || 'Deleted event'}</p>
+                        {request.owner_slot && (
+                          <p className="text-sm text-gray-600">{formatDateTime(request.owner_slot.start_time)}</p>
+                        )}
                       </div>
                     </div>
                   </div>
